@@ -1,0 +1,209 @@
+import time
+import random
+from datetime import datetime, timedelta
+
+class SmartGridHome:
+    def __init__(self):
+        self.bateria_nivel = 50  # Nível inicial da bateria em %
+        self.bateria_capacidade_kwh = 10  # Capacidade total da bateria em kWh
+        self.consumo_total_atual_kw = 0
+        self.geracao_solar_atual_kw = 0
+        self.cargas = {
+            "luz_sala": {"status": False, "consumo_kw": 0.1, "prioridade": 3},
+            "ar_condicionado": {"status": False, "consumo_kw": 2.0, "prioridade": 1},
+            "geladeira": {"status": True, "consumo_kw": 0.2, "prioridade": 4}, # Essencial, alta prioridade
+            "maquina_lavar": {"status": False, "consumo_kw": 1.5, "prioridade": 2},
+            "carro_eletrico": {"status": False, "consumo_kw": 3.0, "prioridade": 2} # Adicionando mais uma carga
+        }
+        self.historico_energia = []
+        self.tempo_simulado = datetime(2024, 1, 1, 8, 0, 0) # Inicia às 8:00
+        self.intervalo_simulacao_segundos = 0.5 # Intervalo entre cada "minuto" simulado para visualização
+
+    def simular_geracao_solar(self):
+        hora_do_dia = self.tempo_simulado.hour + self.tempo_simulado.minute / 60
+        if 6 <= hora_do_dia <= 18:
+            pico = 5.0
+            self.geracao_solar_atual_kw = pico * max(0, 1 - abs(12 - hora_do_dia) / 6)
+            self.geracao_solar_atual_kw = max(0, self.geracao_solar_atual_kw + random.uniform(-0.3, 0.3)) # Variação
+        else:
+            self.geracao_solar_atual_kw = 0.0
+        print(f"[{self.formatar_tempo()}] Geração Solar: {self.geracao_solar_atual_kw:.2f} kW")
+
+    def calcular_consumo_cargas(self):
+        self.consumo_total_atual_kw = sum(
+            carga["consumo_kw"] for carga in self.cargas.values() if carga["status"]
+        )
+        print(f"[{self.formatar_tempo()}] Consumo Total: {self.consumo_total_atual_kw:.2f} kW")
+
+    def gerenciar_energia(self):
+        energia_disponivel = self.geracao_solar_atual_kw
+        energia_necessaria = self.consumo_total_atual_kw
+        bateria_energia_kwh = self.bateria_nivel * self.bateria_capacidade_kwh / 100
+
+        print(f"[{self.formatar_tempo()}] Nível da Bateria: {self.bateria_nivel:.2f}% ({bateria_energia_kwh:.2f} kWh)")
+
+        if energia_disponivel >= energia_necessaria:
+            excedente = energia_disponivel - energia_necessaria
+            self.carregar_bateria(excedente * (self.intervalo_simulacao_segundos / 3600)) # kW para kWh no intervalo
+            print(f"[{self.formatar_tempo()}] Usando energia solar. Excedente: {excedente:.2f} kW. Bateria carregando.")
+        else:
+            deficit = energia_necessaria - energia_disponivel
+            energia_retirada_bateria = min(deficit * (self.intervalo_simulacao_segundos / 3600), bateria_energia_kwh)
+            self.descarregar_bateria(energia_retirada_bateria)
+            deficit_apos_bateria = deficit - (energia_retirada_bateria * 3600 / self.intervalo_simulacao_segundos) # kWh para kW
+
+            if deficit_apos_bateria > 0:
+                print(f"[{self.formatar_tempo()}] Usando energia solar + bateria. Déficit restante de {deficit_apos_bateria:.2f} kW da rede (simulado).")
+                self.verificar_e_desligar_cargas_baixa_prioridade(deficit_apos_bateria)
+            else:
+                print(f"[{self.formatar_tempo()}] Usando energia solar + bateria. Déficit totalmente coberto.")
+
+    def carregar_bateria(self, energia_kwh):
+        carga_possivel = energia_kwh
+        carga_real = min(carga_possivel, (self.bateria_capacidade_kwh - (self.bateria_nivel * self.bateria_capacidade_kwh / 100)))
+        if carga_real > 0:
+            self.bateria_nivel += (carga_real / self.bateria_capacidade_kwh) * 100
+            self.bateria_nivel = min(100, self.bateria_nivel)
+
+    def descarregar_bateria(self, energia_kwh):
+        descarga_possivel = energia_kwh
+        energia_na_bateria = self.bateria_nivel * self.bateria_capacidade_kwh / 100
+        descarga_real = min(descarga_possivel, energia_na_bateria)
+        if descarga_real > 0:
+            self.bateria_nivel -= (descarga_real / self.bateria_capacidade_kwh) * 100
+            self.bateria_nivel = max(0, self.bateria_nivel)
+            return descarga_real
+        return 0
+
+    def verificar_e_desligar_cargas_baixa_prioridade(self, deficit):
+        if self.bateria_nivel < 15 and deficit > 0:
+            cargas_para_desligar = sorted([c for c in self.cargas.items() if c [1]["status"] and c [1]["prioridade"] < 3], key=lambda item: item [1]["prioridade"])
+            for nome_carga, dados_carga in cargas_para_desligar:
+                if nome_carga != "geladeira" and self.cargas [nome_carga]["status"]:
+                    self.cargas [nome_carga]["status"] = False
+                    print(f"[{self.formatar_tempo()}] Alerta: Nível baixo de bateria e alto consumo. Desligando '{nome_carga}'.")
+                    self.calcular_consumo_cargas()
+                    if self.consumo_total_atual_kw <= self.geracao_solar_atual_kw + (self.bateria_nivel * self.bateria_capacidade_kwh / 100) / (3600/self.intervalo_simulacao_segundos):
+                        break # Para de desligar se o consumo estiver ok
+
+    def comando_assistente_virtual(self, comando):
+        comando = comando.lower().strip()
+        partes = comando.split()
+        acao = partes [0] if partes else ""
+
+        if acao == "ligar":
+            if len(partes) > 1:
+                nome_carga_comando = " ".join(partes [1:])
+                for nome_carga_sistema, dados_carga in self.cargas.items():
+                    if nome_carga_comando == nome_carga_sistema.replace("_", " "):
+                        if not dados_carga["status"]:
+                            dados_carga["status"] = True
+                            print(f"[{self.formatar_tempo()}] Comando Recebido: Ligando '{nome_carga_sistema.replace('_', ' ').capitalize()}'.")
+                            self.calcular_consumo_cargas()
+                        else:
+                            print(f"[{self.formatar_tempo()}] '{nome_carga_sistema.replace('_', ' ').capitalize()}' já está ligada.")
+                        return
+                print(f"[{self.formatar_tempo()}] Carga '{nome_carga_comando}' não encontrada.")
+            else:
+                print(f"[{self.formatar_tempo()}] Comando 'ligar' incompleto. Especifique a carga.")
+
+        elif acao == "desligar":
+            if len(partes) > 1:
+                nome_carga_comando = " ".join(partes [1:])
+                for nome_carga_sistema, dados_carga in self.cargas.items():
+                    if nome_carga_comando == nome_carga_sistema.replace("_", " "):
+                        if dados_carga["status"]:
+                            dados_carga["status"] = False
+                            print(f"[{self.formatar_tempo()}] Comando Recebido: Desligando '{nome_carga_sistema.replace('_', ' ').capitalize()}'.")
+                            self.calcular_consumo_cargas()
+                        else:
+                            print(f"[{self.formatar_tempo()}] '{nome_carga_sistema.replace('_', ' ').capitalize()}' já está desligada.")
+                        return
+                print(f"[{self.formatar_tempo()}] Carga '{nome_carga_comando}' não encontrada.")
+            else:
+                print(f"[{self.formatar_tempo()}] Comando 'desligar' incompleto. Especifique a carga.")
+
+        elif comando == "status energia":
+            self.mostrar_status_energia()
+        elif "priorizar" in comando:
+            if len(partes) > 1:
+                nome_carga_comando = " ".join(partes [1:])
+                for nome_carga_sistema, dados_carga in self.cargas.items():
+                    if nome_carga_comando == nome_carga_sistema.replace("_", " "):
+                        print(f"[{self.formatar_tempo()}] Comando Recebido: Priorizando '{nome_carga_sistema.replace('_', ' ').capitalize()}'.")
+                        if not dados_carga["status"]:
+                            energia_disponivel_momento = self.geracao_solar_atual_kw + (self.bateria_nivel * self.bateria_capacidade_kwh / 100) / (3600/self.intervalo_simulacao_segundos)
+                            if energia_disponivel_momento >= dados_carga["consumo_kw"]:
+                                dados_carga["status"] = True
+                                print(f"[{self.formatar_tempo()}] '{nome_carga_sistema.replace('_', ' ').capitalize()}' ligada devido à priorização e disponibilidade de energia.")
+                                self.calcular_consumo_cargas()
+                            else:
+                                print(f"[{self.formatar_tempo()}] Energia insuficiente no momento para ligar '{nome_carga_sistema.replace('_', ' ').capitalize()}'.")
+                        else:
+                            print(f"[{self.formatar_tempo()}] '{nome_carga_sistema.replace('_', ' ').capitalize()}' já está ligada.")
+                        return
+                print(f"[{self.formatar_tempo()}] Carga para priorizar '{nome_carga_comando}' não encontrada.")
+            else:
+                print(f"[{self.formatar_tempo()}] Comando 'priorizar' incompleto. Especifique a carga.")
+        else:
+            print(f"[{self.formatar_tempo()}] Comando não reconhecido. Tente 'ligar [carga]', 'desligar [carga]', 'status energia' ou 'priorizar [carga]'.")
+
+    def mostrar_status_energia(self):
+        print(f"\n--- Status de Energia [{self.formatar_tempo()}] ---")
+        print(f"Nível da Bateria: {self.bateria_nivel:.2f}%")
+        print(f"Geração Solar Atual: {self.geracao_solar_atual_kw:.2f} kW")
+        print(f"Consumo Total Atual: {self.consumo_total_atual_kw:.2f} kW")
+        for nome_carga, dados_carga in self.cargas.items():
+            status = "Ligada" if dados_carga["status"] else "Desligada"
+            print(f"  - {nome_carga.replace('_', ' ').capitalize()}: {status} ({dados_carga['consumo_kw']} kW, Prioridade: {dados_carga['prioridade']})")
+        print("------------------------------------\n")
+
+    def formatar_tempo(self):
+        return self.tempo_simulado.strftime("%H:%M:%S")
+
+    def avancar_tempo(self, minutos=1):
+        self.tempo_simulado += timedelta(minutes=minutos)
+
+    def run_simulation(self, duracao_minutos=120):
+        print("Iniciando simulação SmartGrid Home...")
+        tempo_final = self.tempo_simulado + timedelta(minutes=duracao_minutos)
+        while self.tempo_simulado < tempo_final:
+            self.simular_geracao_solar()
+            self.calcular_consumo_cargas()
+            self.gerenciar_energia()
+            self.historico_energia.append({
+                "tempo": self.tempo_simulado.strftime("%H:%M"),
+                "geracao_solar": self.geracao_solar_atual_kw,
+                "consumo_total": self.consumo_total_atual_kw,
+                "bateria_nivel": self.bateria_nivel
+            })
+            time.sleep(self.intervalo_simulacao_segundos)
+            self.avancar_tempo(1)
+
+            # Interação com o "assistente virtual" em pontos chave da simulação
+            if self.tempo_simulado.hour == 8 and self.tempo_simulado.minute == 10:
+                self.comando_assistente_virtual("status energia")
+            if self.tempo_simulado.hour == 8 and self.tempo_simulado.minute == 30:
+                self.comando_assistente_virtual("ligar maquina de lavar")
+            if self.tempo_simulado.hour == 9 and self.tempo_simulado.minute == 0:
+                self.comando_assistente_virtual("desligar luz sala")
+            if self.tempo_simulado.hour == 9 and self.tempo_simulado.minute == 30:
+                self.comando_assistente_virtual("priorizar ar condicionado")
+            if self.tempo_simulado.hour == 9 and self.tempo_simulado.minute == 50:
+                self.comando_assistente_virtual("status energia")
+
+        print("\nSimulação concluída.")
+        print("\n--- Histórico de Dados Energéticos (Resumo) ---")
+        for dado in self.historico_energia [::10]:
+            print(f"Tempo: {dado['tempo']} | Geração: {dado['geracao_solar']:.2f} kW | Consumo: {dado['consumo_total']:.2f} kW | Bateria: {dado['bateria_nivel']:.2f}%")
+
+        # Permitir interação pós-simulação
+        while True:
+            comando_input = input("\nDigite um comando para o assistente virtual (ou 'sair' para encerrar): ")
+            if comando_input.lower() == 'sair':
+                break
+            self.comando_assistente_virtual(comando_input)
+
+if __name__ == "__main__":
+    sg = SmartGridHome()
+    sg.run_simulation(duracao_minutos=120)
